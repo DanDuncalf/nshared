@@ -76,6 +76,7 @@ bool sb_ensure_cap(StringBuilder *sb, size_t min_cap)
     if (sb->cap >= min_cap) return true;
     
     size_t new_cap = sb->cap;
+    if (new_cap == 0) new_cap = 16;  /* Handle cap=0 after sb_free() to avoid infinite loop */
     while (new_cap < min_cap) {
         if (new_cap > SB_MAX_CAP / 2) {
             if (min_cap <= SB_MAX_CAP) {

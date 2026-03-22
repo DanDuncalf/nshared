@@ -373,12 +373,7 @@ bool platform_console_get_info(PlatformHandle h, PlatformConsoleInfo *out)
     }
 
     ssize_t wn = write(rfd, "\x1b[6n", 4);
-    if (wn != 4) {
-        if (have_tio) tcsetattr(rfd, TCSANOW, &old_tio);
-        close(rfd);
-        out->cursor_x = out->cursor_y = 0;
-        return true;
-    }
+    if (wn != 4) goto cleanup;
 
     char resp[32] = {0};
     for (int i = 0; i < (int)sizeof(resp) - 1; i++) {
@@ -389,14 +384,15 @@ bool platform_console_get_info(PlatformHandle h, PlatformConsoleInfo *out)
         if (resp[i] == 'R') break;
     }
 
-    if (have_tio) tcsetattr(rfd, TCSANOW, &old_tio);
-    close(rfd);
-
     int row = 0, col = 0;
     if (sscanf(resp, "\x1b[%d;%dR", &row, &col) < 1)
         sscanf(resp, "[%d;%dR", &row, &col);
     out->cursor_x = (col > 0) ? col - 1 : 0;
     out->cursor_y = (row > 0) ? row - 1 : 0;
+
+cleanup:
+    if (have_tio) tcsetattr(rfd, TCSANOW, &old_tio);
+    close(rfd);
     return true;
 }
 
@@ -1302,6 +1298,7 @@ bool path_parent(const char *path, char *out, size_t out_size)
 
 const char *path_leaf(const char *path)
 {
+    if (!path) return "";
     const char *b = strrchr(path, '\\');
     const char *f = strrchr(path, '/');
     const char *last = b > f ? b : f;
@@ -1349,7 +1346,7 @@ void path_normalize_separators(char *path)
 
 char path_get_drive(const char *path)
 {
-    if (!path || path[0] < 'A' || path[0] > 'Z') return 0;
-    if (path[1] != ':') return 0;
-    return path[0];
+    if (!path) return 0;
+    if (!isalpha((unsigned char)path[0]) || path[1] != ':') return 0;
+    return (char)toupper((unsigned char)path[0]);
 }
