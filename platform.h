@@ -181,6 +181,7 @@ bool platform_get_module_path(char *buf, size_t buf_size);
 /* Filesystem operations */
 bool platform_delete_file(const char *path);
 bool platform_move_file(const char *src, const char *dst);
+bool platform_move_file_replace(const char *src, const char *dst);
 bool platform_create_dir(const char *path);
 bool platform_file_exists(const char *path);
 bool platform_dir_exists(const char *path);

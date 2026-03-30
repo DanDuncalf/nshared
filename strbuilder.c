@@ -95,28 +95,30 @@ bool sb_ensure_cap(StringBuilder *sb, size_t min_cap)
 
 /* ================================================================ append operations  */
 
-void sb_appendn(StringBuilder *sb, const char *s, size_t n)
+bool sb_appendn(StringBuilder *sb, const char *s, size_t n)
 {
-    if (!sb || !s || n == 0) return;
-    if (!sb_ensure_cap(sb, sb->len + n + 1)) return;
+    if (!sb || !s || n == 0) return true;
+    if (!sb_ensure_cap(sb, sb->len + n + 1)) return false;
     
     memcpy(sb->buf + sb->len, s, n);
     sb->len += n;
     sb->buf[sb->len] = '\0';
+    return true;
 }
 
-void sb_append(StringBuilder *sb, const char *s)
+bool sb_append(StringBuilder *sb, const char *s)
 {
-    if (!sb || !s) return;
-    sb_appendn(sb, s, strlen(s));
+    if (!sb || !s) return true;
+    return sb_appendn(sb, s, strlen(s));
 }
 
-void sb_appendc(StringBuilder *sb, char c)
+bool sb_appendc(StringBuilder *sb, char c)
 {
-    if (!sb) return;
-    if (!sb_ensure_cap(sb, sb->len + 2)) return;
+    if (!sb) return true;
+    if (!sb_ensure_cap(sb, sb->len + 2)) return false;
     sb->buf[sb->len++] = c;
     sb->buf[sb->len] = '\0';
+    return true;
 }
 
 void sb_vappendf(StringBuilder *sb, const char *fmt, va_list ap)
@@ -147,28 +149,83 @@ void sb_appendf(StringBuilder *sb, const char *fmt, ...)
 
 /* ================================================================ JSON utilities  */
 
-void sb_append_json_str(StringBuilder *sb, const char *s)
+bool sb_append_json_str(StringBuilder *sb, const char *s)
 {
-    if (!sb) return;
-    sb_appendc(sb, '"');
-    for (const char *p = s; p && *p; p++) {
+    if (!sb) return true;
+    if (!s) s = "";
+
+    /* First pass: compute required space so we append in-place once. */
+    size_t extra = 2;  /* opening/closing quotes */
+    for (const char *p = s; *p; p++) {
         switch (*p) {
-            case '"':  sb_append(sb, "\\\""); break;
-            case '\\': sb_append(sb, "\\\\"); break;
-            case '\n': sb_append(sb, "\\n");  break;
-            case '\r': sb_append(sb, "\\r");  break;
-            case '\t': sb_append(sb, "\\t");  break;
-            case '\b': sb_append(sb, "\\b");  break;
-            case '\f': sb_append(sb, "\\f");  break;
+            case '"':
+            case '\\':
+            case '\n':
+            case '\r':
+            case '\t':
+            case '\b':
+            case '\f':
+                extra += 2;
+                break;
             default:
                 if ((unsigned char)*p < 0x20) {
-                    sb_appendf(sb, "\\u%04x", (unsigned char)*p);
+                    extra += 6;  /* \u00XX */
                 } else {
-                    sb_appendc(sb, *p);
+                    extra += 1;
                 }
         }
     }
-    sb_appendc(sb, '"');
+    if (!sb_ensure_cap(sb, sb->len + extra + 1)) return false;
+
+    /* Second pass: emit escaped JSON string directly into buffer. */
+    static const char hex[] = "0123456789abcdef";
+    sb->buf[sb->len++] = '"';
+    for (const char *p = s; *p; p++) {
+        switch (*p) {
+            case '"':
+                sb->buf[sb->len++] = '\\';
+                sb->buf[sb->len++] = '"';
+                break;
+            case '\\':
+                sb->buf[sb->len++] = '\\';
+                sb->buf[sb->len++] = '\\';
+                break;
+            case '\n':
+                sb->buf[sb->len++] = '\\';
+                sb->buf[sb->len++] = 'n';
+                break;
+            case '\r':
+                sb->buf[sb->len++] = '\\';
+                sb->buf[sb->len++] = 'r';
+                break;
+            case '\t':
+                sb->buf[sb->len++] = '\\';
+                sb->buf[sb->len++] = 't';
+                break;
+            case '\b':
+                sb->buf[sb->len++] = '\\';
+                sb->buf[sb->len++] = 'b';
+                break;
+            case '\f':
+                sb->buf[sb->len++] = '\\';
+                sb->buf[sb->len++] = 'f';
+                break;
+            default:
+                if ((unsigned char)*p < 0x20) {
+                    sb->buf[sb->len++] = '\\';
+                    sb->buf[sb->len++] = 'u';
+                    sb->buf[sb->len++] = '0';
+                    sb->buf[sb->len++] = '0';
+                    sb->buf[sb->len++] = hex[((unsigned char)*p) >> 4];
+                    sb->buf[sb->len++] = hex[((unsigned char)*p) & 0x0f];
+                } else {
+                    sb->buf[sb->len++] = *p;
+                }
+        }
+    }
+    sb->buf[sb->len++] = '"';
+    sb->buf[sb->len] = '\0';
+    return true;
 }
 
 /* ================================================================ buffer transfer  */

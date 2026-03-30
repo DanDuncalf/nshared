@@ -621,6 +621,18 @@ bool platform_move_file(const char *src, const char *dst)
 #endif
 }
 
+bool platform_move_file_replace(const char *src, const char *dst)
+{
+    if (!src || !dst) return false;
+#if PLATFORM_WINDOWS
+    /* MOVEFILE_REPLACE_EXISTING provides atomic file replacement on Windows */
+    return MoveFileExA(src, dst, MOVEFILE_REPLACE_EXISTING) != 0;
+#else
+    /* POSIX rename() atomically replaces the destination if it exists */
+    return rename(src, dst) == 0;
+#endif
+}
+
 bool platform_create_dir(const char *path)
 {
     if (!path) return false;
