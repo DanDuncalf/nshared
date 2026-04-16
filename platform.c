@@ -535,7 +535,13 @@ bool platform_console_read_key_vk(PlatformHandle h, unsigned short *out_vk)
             case 0x7f: case '\b': *out_vk = PLATFORM_VK_BACK;   return true;
             case '\t':             *out_vk = PLATFORM_VK_TAB;    return true;
             case 'q':  case 'Q':  *out_vk = PLATFORM_VK_ESCAPE; return true;
-            default:   continue;
+            default:
+                /* Return all printable ASCII characters (32-126) */
+                if (c >= 32 && c <= 126) {
+                    *out_vk = c;
+                    return true;
+                }
+                continue;
         }
     }
 }
