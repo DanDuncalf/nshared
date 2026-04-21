@@ -185,6 +185,13 @@ bool platform_move_file_replace(const char *src, const char *dst);
 bool platform_create_dir(const char *path);
 bool platform_file_exists(const char *path);
 bool platform_dir_exists(const char *path);
+bool platform_dir_is_empty(const char *path);
+bool platform_remove_dir(const char *path);
+bool platform_remove_tree(const char *path);
+bool platform_move_dir(const char *src, const char *dst);
+bool platform_create_symlink(const char *target, const char *link);
+bool platform_set_mode(const char *path, int mode);
+int platform_get_mode(const char *path);
 
 /* Mount/drive enumeration helpers */
 char platform_get_drive_letter(const char *mount);

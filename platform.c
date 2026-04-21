@@ -86,6 +86,8 @@ static const char *platform_pseudo_filesystems[] = {
 
 /* ================================================================ shared helpers */
 
+bool path_join(char *out, size_t out_size, const char *base, const char *name);
+
 char *platform_strtok(char *str, const char *delim, char **saveptr)
 {
 #if PLATFORM_WINDOWS
@@ -673,6 +675,189 @@ bool platform_dir_exists(const char *path)
 #endif
 }
 
+bool platform_dir_is_empty(const char *path)
+{
+    if (!path) return false;
+#if PLATFORM_WINDOWS
+    char pattern[MAX_PATH];
+    snprintf(pattern, sizeof(pattern), "%s\\*", path);
+
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pattern, &fd);
+    if (h == INVALID_HANDLE_VALUE) return false;
+
+    bool has_entries = false;
+    do {
+        if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0)
+            continue;
+        has_entries = true;
+        break;
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+    return !has_entries;
+#else
+    DIR *d = opendir(path);
+    if (!d) return false;
+
+    struct dirent *ent;
+    bool has_entries = false;
+    while ((ent = readdir(d)) != NULL) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
+            continue;
+        has_entries = true;
+        break;
+    }
+    closedir(d);
+    return !has_entries;
+#endif
+}
+
+bool platform_remove_dir(const char *path)
+{
+    if (!path) return false;
+#if PLATFORM_WINDOWS
+    return RemoveDirectoryA(path) != 0;
+#else
+    return rmdir(path) == 0;
+#endif
+}
+
+bool platform_remove_tree(const char *path)
+{
+    if (!path) return false;
+#if PLATFORM_WINDOWS
+    DWORD attr = GetFileAttributesA(path);
+    if (attr == INVALID_FILE_ATTRIBUTES) return false;
+    if (!(attr & FILE_ATTRIBUTE_DIRECTORY)) {
+        return DeleteFileA(path) != 0;
+    }
+
+    char pattern[MAX_PATH];
+    snprintf(pattern, sizeof(pattern), "%s\\*", path);
+
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pattern, &fd);
+    if (h == INVALID_HANDLE_VALUE) {
+        return RemoveDirectoryA(path) != 0;
+    }
+
+    bool success = true;
+    do {
+        if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0)
+            continue;
+
+        char child[MAX_PATH];
+        path_join(child, sizeof(child), path, fd.cFileName);
+
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            if (!platform_remove_tree(child)) {
+                success = false;
+            }
+        } else {
+            if (!DeleteFileA(child)) {
+                success = false;
+            }
+        }
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+
+    if (success) {
+        if (!RemoveDirectoryA(path)) {
+            success = false;
+        }
+    }
+    return success;
+#else
+    struct stat st;
+    if (stat(path, &st) != 0) return false;
+    if (!S_ISDIR(st.st_mode)) {
+        return unlink(path) == 0;
+    }
+
+    DIR *d = opendir(path);
+    if (!d) return rmdir(path) == 0;
+
+    struct dirent *ent;
+    bool success = true;
+    while ((ent = readdir(d)) != NULL) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
+            continue;
+
+        char child[MAX_PATH];
+        path_join(child, sizeof(child), path, ent->d_name);
+
+        struct stat child_st;
+        if (stat(child, &child_st) == 0) {
+            if (S_ISDIR(child_st.st_mode)) {
+                if (!platform_remove_tree(child)) {
+                    success = false;
+                }
+            } else {
+                if (unlink(child) != 0) {
+                    success = false;
+                }
+            }
+        }
+    }
+    closedir(d);
+
+    if (success) {
+        if (rmdir(path) != 0) {
+            success = false;
+        }
+    }
+    return success;
+#endif
+}
+
+bool platform_move_dir(const char *src, const char *dst)
+{
+    if (!src || !dst) return false;
+#if PLATFORM_WINDOWS
+    return MoveFileA(src, dst) != 0;
+#else
+    return rename(src, dst) == 0;
+#endif
+}
+
+bool platform_create_symlink(const char *target, const char *link)
+{
+    if (!target || !link) return false;
+#if PLATFORM_WINDOWS
+    DWORD flags = 0;
+    DWORD attr = GetFileAttributesA(target);
+    if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY)) {
+        flags |= SYMBOLIC_LINK_FLAG_DIRECTORY;
+    }
+    return CreateSymbolicLinkA(link, target, flags) != 0;
+#else
+    return symlink(target, link) == 0;
+#endif
+}
+
+bool platform_set_mode(const char *path, int mode)
+{
+    if (!path) return false;
+#if PLATFORM_WINDOWS
+    (void)mode;
+    return true; /* No-op on Windows */
+#else
+    return chmod(path, (mode_t)mode) == 0;
+#endif
+}
+
+int platform_get_mode(const char *path)
+{
+    if (!path) return -1;
+#if PLATFORM_WINDOWS
+    return -1; /* Not supported on Windows */
+#else
+    struct stat st;
+    if (stat(path, &st) != 0) return -1;
+    return (int)(st.st_mode & 0777);
+#endif
+}
+
 /* ================================================================ database paths */
 
 bool platform_db_default_path(char *buf, size_t buf_size)
@@ -833,6 +1018,13 @@ int platform_enumerate_mounts(char mount_bufs[][MAX_PATH],
         UINT dtype = GetDriveTypeA(root);
 
         if (dtype == DRIVE_NO_ROOT_DIR || dtype == DRIVE_UNKNOWN || dtype == DRIVE_CDROM)
+            continue;
+
+        /* Verify the drive is actually accessible (has mounted media/filesystem).
+         * GetLogicalDrives() returns letters for empty card readers and
+         * disconnected network drives; GetDiskFreeSpaceExA filters those out. */
+        ULARGE_INTEGER freeBytes;
+        if (!GetDiskFreeSpaceExA(root, &freeBytes, NULL, NULL))
             continue;
 
         if (buf_size < 4) continue;
