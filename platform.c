@@ -315,6 +315,17 @@ PlatformHandle platform_console_open_out(bool read_write)
 {
     int flags = read_write ? O_RDWR : O_WRONLY;
     int fd = open("/dev/tty", flags | O_NOCTTY);
+    if (fd < 0) return NULL;
+
+    /* Avoid terminal I/O when stdout is not a terminal (e.g., redirected
+     * to a file or pipe). Writing terminal control sequences from a
+     * background or non-interactive process can hang on some platforms
+     * (e.g., WSL) when the terminal output buffer fills up. */
+    if (!isatty(STDOUT_FILENO)) {
+        close(fd);
+        return NULL;
+    }
+
     return fd_enc(fd);
 }
 
@@ -728,6 +739,14 @@ bool platform_remove_tree(const char *path)
 #if PLATFORM_WINDOWS
     DWORD attr = GetFileAttributesA(path);
     if (attr == INVALID_FILE_ATTRIBUTES) return false;
+    if (attr & FILE_ATTRIBUTE_REPARSE_POINT) {
+        /* Delete reparse point itself, do not follow into target */
+        if (attr & FILE_ATTRIBUTE_DIRECTORY) {
+            return RemoveDirectoryA(path) != 0;
+        } else {
+            return DeleteFileA(path) != 0;
+        }
+    }
     if (!(attr & FILE_ATTRIBUTE_DIRECTORY)) {
         return DeleteFileA(path) != 0;
     }
@@ -747,9 +766,23 @@ bool platform_remove_tree(const char *path)
             continue;
 
         char child[MAX_PATH];
-        path_join(child, sizeof(child), path, fd.cFileName);
+        if (!path_join(child, sizeof(child), path, fd.cFileName)) {
+            success = false;
+            continue;
+        }
 
-        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+            /* Delete reparse point itself, do not follow into target */
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                if (!RemoveDirectoryA(child)) {
+                    success = false;
+                }
+            } else {
+                if (!DeleteFileA(child)) {
+                    success = false;
+                }
+            }
+        } else if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
             if (!platform_remove_tree(child)) {
                 success = false;
             }
@@ -769,7 +802,10 @@ bool platform_remove_tree(const char *path)
     return success;
 #else
     struct stat st;
-    if (stat(path, &st) != 0) return false;
+    if (lstat(path, &st) != 0) return false;
+    if (S_ISLNK(st.st_mode)) {
+        return unlink(path) == 0;
+    }
     if (!S_ISDIR(st.st_mode)) {
         return unlink(path) == 0;
     }
@@ -784,11 +820,18 @@ bool platform_remove_tree(const char *path)
             continue;
 
         char child[MAX_PATH];
-        path_join(child, sizeof(child), path, ent->d_name);
+        if (!path_join(child, sizeof(child), path, ent->d_name)) {
+            success = false;
+            continue;
+        }
 
         struct stat child_st;
-        if (stat(child, &child_st) == 0) {
-            if (S_ISDIR(child_st.st_mode)) {
+        if (lstat(child, &child_st) == 0) {
+            if (S_ISLNK(child_st.st_mode)) {
+                if (unlink(child) != 0) {
+                    success = false;
+                }
+            } else if (S_ISDIR(child_st.st_mode)) {
                 if (!platform_remove_tree(child)) {
                     success = false;
                 }
