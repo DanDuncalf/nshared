@@ -192,6 +192,7 @@ bool platform_move_dir(const char *src, const char *dst);
 bool platform_create_symlink(const char *target, const char *link);
 bool platform_set_mode(const char *path, int mode);
 int platform_get_mode(const char *path);
+bool platform_is_admin(void);
 
 /* Mount/drive enumeration helpers */
 char platform_get_drive_letter(const char *mount);

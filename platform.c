@@ -901,6 +901,32 @@ int platform_get_mode(const char *path)
 #endif
 }
 
+bool platform_is_admin(void)
+{
+#if PLATFORM_WINDOWS
+    /* Check if the current process is running with administrator privileges.
+     * Uses the Security Identifier (SID) approach which is the recommended
+     * way to detect elevation on Windows. IsUserAnAdmin() is a Shell32
+     * function we avoid to keep the dependency surface minimal. */
+    BOOL is_admin = FALSE;
+    SID_IDENTIFIER_AUTHORITY nt_auth = SECURITY_NT_AUTHORITY;
+    PSID admin_group = NULL;
+    if (AllocateAndInitializeSid(&nt_auth, 2,
+            SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_ADMINS,
+            0, 0, 0, 0, 0, 0, &admin_group)) {
+        if (!CheckTokenMembership(NULL, admin_group, &is_admin)) {
+            is_admin = FALSE;
+        }
+        FreeSid(admin_group);
+    }
+    return is_admin != FALSE;
+#else
+    /* On Linux, root detection is handled separately in ncd_is_system_mode()
+     * via getuid(). This function exists for cross-platform API completeness. */
+    return (geteuid() == 0);
+#endif
+}
+
 /* ================================================================ database paths */
 
 bool platform_db_default_path(char *buf, size_t buf_size)
