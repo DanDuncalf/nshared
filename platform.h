@@ -226,9 +226,10 @@ long platform_atomic_inc(volatile long *v);
 long platform_atomic_exchange(volatile long *dst, long value);
 long platform_atomic_read(volatile long *v);
 
-/* CRC64 checksum (ECMA-182 polynomial) */
+/* CRC64 (ECMA-182 polynomial, slice-by-8).  platform_crc64_update chains finalized values:
+ * platform_crc64_update(platform_crc64(a), b) == platform_crc64(a || b). */
 unsigned long long platform_crc64(const void *data, size_t len);
-unsigned long long platform_crc64_update(unsigned long long crc, const void *data, size_t len);
+unsigned long long platform_crc64_update(unsigned long long prev, const void *data, size_t len);
 
 /* Threading */
 PlatformHandle platform_thread_create(unsigned long (*fn)(void *), void *param);

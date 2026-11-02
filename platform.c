@@ -1249,59 +1249,74 @@ long platform_atomic_read(volatile long *v)
  *                      x^7 + x^4 + x^1 + 1
  * Normal form: 0x42F0E1EBA9EA3693
  */
-#define CRC64_POLY 0x42F0E1EBA9EA3693ULL
-#define CRC64_INIT 0xFFFFFFFFFFFFFFFFULL
+/* Slice-by-8 implementation.
+ *
+ * The one CRC64 used by every NCD file format and shared-memory snapshot.
+ * Polynomial 0x42F0E1EBA9EA3693 processed LSB-first, init ~0, xorout ~0 --
+ * bit-identical to the historical byte-wise implementation.  Tables are
+ * compile-time constants (tools/gen_crc64_table.py), so there is no lazy
+ * initialisation and no init race.
+ */
+#include "crc64_table.inc"
 
-static uint64_t crc64_table[256];
-static bool crc64_table_initialized = false;
+#if defined(__BYTE_ORDER__) && defined(__ORDER_BIG_ENDIAN__) && (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)
+#define CRC64_LITTLE_ENDIAN 0
+#else
+#define CRC64_LITTLE_ENDIAN 1   /* MSVC targets and all supported GCC/Clang targets (x64, arm64, riscv64) */
+#endif
 
-static void crc64_init_table(void)
+#define CRC64_BYTE(crc, b) (crc64_tables[0][((crc) ^ (b)) & 0xFFu] ^ ((crc) >> 8))
+
+#if CRC64_LITTLE_ENDIAN
+static inline uint64_t crc64_fold8(uint64_t crc, uint64_t w)
 {
-    if (crc64_table_initialized) return;
-    
-    for (int i = 0; i < 256; i++) {
-        uint64_t crc = i;
-        for (int j = 0; j < 8; j++) {
-            if (crc & 1) {
-                crc = (crc >> 1) ^ CRC64_POLY;
-            } else {
-                crc >>= 1;
-            }
-        }
-        crc64_table[i] = crc;
+    w ^= crc;
+    return crc64_tables[7][ w        & 0xFFu] ^
+           crc64_tables[6][(w >>  8) & 0xFFu] ^
+           crc64_tables[5][(w >> 16) & 0xFFu] ^
+           crc64_tables[4][(w >> 24) & 0xFFu] ^
+           crc64_tables[3][(w >> 32) & 0xFFu] ^
+           crc64_tables[2][(w >> 40) & 0xFFu] ^
+           crc64_tables[1][(w >> 48) & 0xFFu] ^
+           crc64_tables[0][ w >> 56         ];
+}
+#endif
+
+unsigned long long platform_crc64_update(unsigned long long prev, const void *data, size_t len)
+{
+    if (!data || len == 0) return prev;
+    const uint8_t *p = (const uint8_t *)data;
+    uint64_t crc = ~(uint64_t)prev;
+#if CRC64_LITTLE_ENDIAN
+    /* Align to 8 bytes so the wide loads below never straddle a cache line. */
+    while (len && ((uintptr_t)p & 7u)) { crc = CRC64_BYTE(crc, *p++); len--; }
+    /* Main loop: 32 bytes per iteration (four slice-by-8 folds). */
+    while (len >= 32) {
+        uint64_t w0, w1, w2, w3;
+        memcpy(&w0, p,      8);
+        memcpy(&w1, p + 8,  8);
+        memcpy(&w2, p + 16, 8);
+        memcpy(&w3, p + 24, 8);
+        crc = crc64_fold8(crc, w0);
+        crc = crc64_fold8(crc, w1);
+        crc = crc64_fold8(crc, w2);
+        crc = crc64_fold8(crc, w3);
+        p += 32; len -= 32;
     }
-    crc64_table_initialized = true;
+    while (len >= 8) {
+        uint64_t w;
+        memcpy(&w, p, 8);
+        crc = crc64_fold8(crc, w);
+        p += 8; len -= 8;
+    }
+#endif
+    while (len--) crc = CRC64_BYTE(crc, *p++);
+    return (unsigned long long)~crc;
 }
 
 unsigned long long platform_crc64(const void *data, size_t len)
 {
-    if (!data || len == 0) return 0;
-    
-    crc64_init_table();
-    
-    const uint8_t *bytes = (const uint8_t *)data;
-    uint64_t crc = CRC64_INIT;
-    
-    for (size_t i = 0; i < len; i++) {
-        crc = crc64_table[(crc ^ bytes[i]) & 0xFF] ^ (crc >> 8);
-    }
-    
-    return crc ^ CRC64_INIT;  /* Final XOR */
-}
-
-unsigned long long platform_crc64_update(unsigned long long crc, const void *data, size_t len)
-{
-    if (!data || len == 0) return crc;
-    
-    crc64_init_table();
-    
-    const uint8_t *bytes = (const uint8_t *)data;
-    
-    for (size_t i = 0; i < len; i++) {
-        crc = crc64_table[(crc ^ bytes[i]) & 0xFF] ^ (crc >> 8);
-    }
-    
-    return crc;
+    return platform_crc64_update(0, data, len);
 }
 
 /* ================================================================ threading */
