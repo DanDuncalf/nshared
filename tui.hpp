@@ -9,6 +9,10 @@
 struct PlatformHandle_t;
 typedef void* PlatformHandle;
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 namespace gittui {
 
 // Virtual key codes — use fixed type to avoid template deduction ambiguity
@@ -179,6 +183,17 @@ public:
     // Get the test backend (only valid in test mode).
     TestBackend* test_backend() const { return test_backend_; }
 
+    // Save the current visible console viewport (chars + attributes + position).
+    // Call before clear_screen() to preserve what was on screen.
+    void save_screen();
+
+    // Restore the previously saved console viewport (chars + attributes + position).
+    // Call before destructor to leave the console as we found it.
+    void restore_screen();
+
+    // Returns true if a screen snapshot was saved.
+    bool has_saved_screen() const { return screen_saved_; }
+
 private:
     PlatformHandle out_;
     PlatformHandle in_;
@@ -189,6 +204,14 @@ private:
     bool input_mode_saved_;
     bool test_mode_;
     TestBackend* test_backend_;
+
+    // Saved screen state (Windows only)
+    bool screen_saved_ = false;
+#ifdef _WIN32
+    SMALL_RECT saved_viewport_{};
+    std::vector<CHAR_INFO> saved_buffer_;
+    COORD saved_buffer_size_{};
+#endif
 };
 
 // ---------------------------------------------------------------------------

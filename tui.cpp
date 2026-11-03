@@ -345,6 +345,7 @@ Terminal::~Terminal() {
         }
         return;
     }
+    restore_screen();
     if (valid_) {
         set_cursor_visible(true);
         if (input_mode_saved_) {
@@ -362,6 +363,39 @@ void Terminal::refresh_size() {
         width_ = info.window_right - info.window_left + 1;
         height_ = info.window_bottom - info.window_top + 1;
     }
+}
+
+void Terminal::save_screen() {
+    if (test_mode_ || !out_) return;
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    if (!GetConsoleScreenBufferInfo((HANDLE)out_, &csbi)) return;
+
+    saved_viewport_ = csbi.srWindow;
+
+    SHORT buf_w = csbi.srWindow.Right - csbi.srWindow.Left + 1;
+    SHORT buf_h = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
+    saved_buffer_size_ = { buf_w, buf_h };
+    saved_buffer_.resize(buf_w * buf_h);
+
+    ReadConsoleOutputW(
+        (HANDLE)out_, saved_buffer_.data(), saved_buffer_size_,
+        { 0, 0 }, &saved_viewport_);
+
+    screen_saved_ = true;
+}
+
+void Terminal::restore_screen() {
+    if (test_mode_ || !out_ || !screen_saved_) return;
+
+    SetConsoleWindowInfo((HANDLE)out_, TRUE, &saved_viewport_);
+
+    WriteConsoleOutputW(
+        (HANDLE)out_, saved_buffer_.data(), saved_buffer_size_,
+        { 0, 0 }, &saved_viewport_);
+
+    saved_buffer_.clear();
+    saved_buffer_.shrink_to_fit();
+    screen_saved_ = false;
 }
 
 void Terminal::set_cursor(int row, int col) {
@@ -423,6 +457,18 @@ void Terminal::clear_screen() {
         return;
     }
     if (!out_) return;
+
+    // Reset the console viewport to the top of the buffer.
+    // If the buffer was scrolled down (e.g., user had previous output),
+    // WriteConsoleOutputW writes to buffer coordinates 0..height-1,
+    // but the viewport might be showing a different region, so the user
+    // sees nothing.
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    if (GetConsoleScreenBufferInfo((HANDLE)out_, &csbi)) {
+        SMALL_RECT wr = { 0, 0, (SHORT)(width_ - 1), (SHORT)(height_ - 1) };
+        SetConsoleWindowInfo((HANDLE)out_, TRUE, &wr);
+    }
+
     // Use WriteConsoleOutput for fast bulk clear
     COORD bufSize = { (SHORT)width_, (SHORT)height_ };
     COORD bufCoord = { 0, 0 };
@@ -698,6 +744,10 @@ uint16_t Terminal::read_key(uint32_t timeout_ms) {
     platform_console_read_key_vk(in_, &vk);
     return vk;
 }
+
+// save_screen / restore_screen are Windows-only (no-op stubs for POSIX)
+void Terminal::save_screen() {}
+void Terminal::restore_screen() {}
 
 #endif // _WIN32
 
